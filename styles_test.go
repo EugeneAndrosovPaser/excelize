@@ -26,7 +26,9 @@ func TestStyleFill(t *testing.T) {
 	for _, testCase := range cases {
 		xl := NewFile()
 		styleID, err := xl.NewStyle(testCase.format)
-		assert.NoError(t, err)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		styles := xl.stylesReader()
 		style := styles.CellXfs.Xf[styleID]
@@ -36,13 +38,6 @@ func TestStyleFill(t *testing.T) {
 			assert.Equal(t, *style.FillID, 0, testCase.label)
 		}
 	}
-	f := NewFile()
-	styleID1, err := f.NewStyle(`{"fill":{"type":"pattern","pattern":1,"color":["#000000"]}}`)
-	assert.NoError(t, err)
-	styleID2, err := f.NewStyle(`{"fill":{"type":"pattern","pattern":1,"color":["#000000"]}}`)
-	assert.NoError(t, err)
-	assert.Equal(t, styleID1, styleID2)
-	assert.NoError(t, f.SaveAs(filepath.Join("test", "TestStyleFill.xlsx")))
 }
 
 func TestSetConditionalFormat(t *testing.T) {
@@ -236,12 +231,4 @@ func TestSetCellStyle(t *testing.T) {
 	f := NewFile()
 	// Test set cell style on not exists worksheet.
 	assert.EqualError(t, f.SetCellStyle("SheetN", "A1", "A2", 1), "sheet SheetN is not exist")
-}
-
-func TestGetStyleID(t *testing.T) {
-	assert.Equal(t, -1, NewFile().getStyleID(&xlsxStyleSheet{}, nil))
-}
-
-func TestGetFillID(t *testing.T) {
-	assert.Equal(t, -1, getFillID(NewFile().stylesReader(), &Style{Fill: Fill{Type: "unknown"}}))
 }
