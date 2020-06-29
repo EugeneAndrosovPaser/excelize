@@ -32,6 +32,11 @@ type PivotTableOption struct {
 	PageOverThenDown  bool
 	MergeItem         bool
 	CompactData       bool
+	ShowRowHeaders    bool
+	ShowColHeaders    bool
+	ShowRowStripes    bool
+	ShowColStripes    bool
+	ShowLastColumn    bool
 }
 
 // PivotTableField directly maps the field settings of the pivot table.
@@ -313,9 +318,11 @@ func (f *File) addPivotTable(cacheID, pivotTableID int, pivotTableXML string, op
 		},
 		PivotTableStyleInfo: &xlsxPivotTableStyleInfo{
 			Name:           "PivotStyleLight16",
-			ShowRowHeaders: true,
-			ShowColHeaders: true,
-			ShowLastColumn: true,
+			ShowRowHeaders: opt.ShowRowHeaders,
+			ShowColHeaders: opt.ShowColHeaders,
+			ShowRowStripes: opt.ShowRowStripes,
+			ShowColStripes: opt.ShowColStripes,
+			ShowLastColumn: opt.ShowLastColumn,
 		},
 	}
 
