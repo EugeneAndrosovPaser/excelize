@@ -19,24 +19,25 @@ import (
 
 // PivotTableOption directly maps the format settings of the pivot table.
 type PivotTableOption struct {
-	DataRange         string
-	PivotTableRange   string
-	Rows              []PivotTableField
-	Columns           []PivotTableField
-	Data              []PivotTableField
-	Filter            []PivotTableField
-	RowGrandTotals    bool
-	ColGrandTotals    bool
-	ShowDrill         bool
-	UseAutoFormatting bool
-	PageOverThenDown  bool
-	MergeItem         bool
-	CompactData       bool
-	ShowRowHeaders    bool
-	ShowColHeaders    bool
-	ShowRowStripes    bool
-	ShowColStripes    bool
-	ShowLastColumn    bool
+	DataRange           string
+	PivotTableRange     string
+	Rows                []PivotTableField
+	Columns             []PivotTableField
+	Data                []PivotTableField
+	Filter              []PivotTableField
+	RowGrandTotals      bool
+	ColGrandTotals      bool
+	ShowDrill           bool
+	UseAutoFormatting   bool
+	PageOverThenDown    bool
+	MergeItem           bool
+	CompactData         bool
+	ShowRowHeaders      bool
+	ShowColHeaders      bool
+	ShowRowStripes      bool
+	ShowColStripes      bool
+	ShowLastColumn      bool
+	PivotTableStyleName string
 }
 
 // PivotTableField directly maps the field settings of the pivot table.
@@ -286,6 +287,13 @@ func (f *File) addPivotTable(cacheID, pivotTableID int, pivotTableXML string, op
 	// rowGrandTotal := opt.RowGrandTotals
 	// colGrandTotal := opt.ColGrandTotals
 
+	pivotTableStyle := func() string {
+		if opt.PivotTableStyleName == "" {
+			return "PivotStyleLight16"
+		} else {
+			return opt.PivotTableStyleName
+		}
+	}
 	pt := xlsxPivotTableDefinition{
 		Name:              fmt.Sprintf("Pivot Table%d", pivotTableID),
 		CacheID:           cacheID,
@@ -317,7 +325,7 @@ func (f *File) addPivotTable(cacheID, pivotTableID int, pivotTableXML string, op
 			I:     []*xlsxI{{}},
 		},
 		PivotTableStyleInfo: &xlsxPivotTableStyleInfo{
-			Name:           "PivotStyleLight16",
+			Name:           pivotTableStyle(),
 			ShowRowHeaders: opt.ShowRowHeaders,
 			ShowColHeaders: opt.ShowColHeaders,
 			ShowRowStripes: opt.ShowRowStripes,
