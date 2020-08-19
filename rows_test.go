@@ -169,8 +169,6 @@ func TestSharedStringsReader(t *testing.T) {
 	f := NewFile()
 	f.XLSX["xl/sharedStrings.xml"] = MacintoshCyrillicCharset
 	f.sharedStringsReader()
-	si := xlsxSI{}
-	assert.EqualValues(t, "", si.String())
 }
 
 func TestRowVisibility(t *testing.T) {

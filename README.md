@@ -29,9 +29,9 @@ go get github.com/360EntSecGroup-Skylar/excelize
 go get github.com/360EntSecGroup-Skylar/excelize/v2
 ```
 
-### Create spreadsheet
+### Create XLSX file
 
-Here is a minimal example usage that will create spreadsheet file.
+Here is a minimal example usage that will create XLSX file.
 
 ```go
 package main
@@ -58,9 +58,9 @@ func main() {
 }
 ```
 
-### Reading spreadsheet
+### Reading XLSX file
 
-The following constitutes the bare to read a spreadsheet document.
+The following constitutes the bare to read a XLSX document.
 
 ```go
 package main
@@ -95,7 +95,7 @@ func main() {
 }
 ```
 
-### Add chart to spreadsheet file
+### Add chart to XLSX file
 
 With Excelize chart generation and management is as easy as a few lines of code. You can build charts based off data in your worksheet or generate charts without any data in your worksheet at all.
 
@@ -131,7 +131,7 @@ func main() {
 }
 ```
 
-### Add picture to spreadsheet file
+### Add picture to XLSX file
 
 ```go
 package main

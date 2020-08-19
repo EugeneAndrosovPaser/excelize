@@ -32,9 +32,8 @@ import (
 )
 
 // NewSheet provides function to create a new sheet by given worksheet name.
-// When creating a new spreadsheet file, the default worksheet will be
-// created. Returns the number of sheets in the workbook (file) after
-// appending the new sheet.
+// When creating a new XLSX file, the default sheet will be created. Returns
+// the number of sheets in the workbook (file) after appending the new sheet.
 func (f *File) NewSheet(name string) int {
 	// Check if the worksheet already exists
 	if f.GetSheetIndex(name) != -1 {
@@ -92,18 +91,15 @@ func (f *File) contentTypesWriter() {
 // structure after deserialization.
 func (f *File) workbookReader() *xlsxWorkbook {
 	var err error
+
 	if f.WorkBook == nil {
 		f.WorkBook = new(xlsxWorkbook)
-		if _, ok := f.xmlAttr["xl/workbook.xml"]; !ok {
-			d := f.xmlNewDecoder(bytes.NewReader(namespaceStrictToTransitional(f.readXML("xl/workbook.xml"))))
-			f.xmlAttr["xl/workbook.xml"] = append(f.xmlAttr["xl/workbook.xml"], getRootElement(d)...)
-			f.addNameSpaces("xl/workbook.xml", SourceRelationship)
-		}
 		if err = f.xmlNewDecoder(bytes.NewReader(namespaceStrictToTransitional(f.readXML("xl/workbook.xml")))).
 			Decode(f.WorkBook); err != nil && err != io.EOF {
 			log.Printf("xml decode error: %s", err)
 		}
 	}
+
 	return f.WorkBook
 }
 
@@ -112,7 +108,7 @@ func (f *File) workbookReader() *xlsxWorkbook {
 func (f *File) workBookWriter() {
 	if f.WorkBook != nil {
 		output, _ := xml.Marshal(f.WorkBook)
-		f.saveFileList("xl/workbook.xml", replaceRelationshipsBytes(f.replaceNameSpaceBytes("xl/workbook.xml", output)))
+		f.saveFileList("xl/workbook.xml", replaceRelationshipsBytes(replaceRelationshipsNameSpaceBytes(output)))
 	}
 }
 
@@ -125,7 +121,7 @@ func (f *File) workSheetWriter() {
 				f.Sheet[p].SheetData.Row[k].C = trimCell(v.C)
 			}
 			output, _ := xml.Marshal(sheet)
-			f.saveFileList(p, replaceRelationshipsBytes(f.replaceNameSpaceBytes(p, output)))
+			f.saveFileList(p, replaceRelationshipsBytes(replaceRelationshipsNameSpaceBytes(output)))
 			ok := f.checked[p]
 			if ok {
 				delete(f.Sheet, p)
@@ -156,7 +152,7 @@ func trimCell(column []xlsxC) []xlsxC {
 }
 
 // setContentTypes provides a function to read and update property of contents
-// type of the spreadsheet.
+// type of XLSX.
 func (f *File) setContentTypes(partName, contentType string) {
 	content := f.contentTypesReader()
 	content.Overrides = append(content.Overrides, xlsxOverride{
@@ -176,11 +172,10 @@ func (f *File) setSheet(index int, name string) {
 	path := "xl/worksheets/sheet" + strconv.Itoa(index) + ".xml"
 	f.sheetMap[trimSheetName(name)] = path
 	f.Sheet[path] = &xlsx
-	f.xmlAttr[path] = append(f.xmlAttr[path], NameSpaceSpreadSheet)
 }
 
-// setWorkbook update workbook property of the spreadsheet. Maximum 31
-// characters are allowed in sheet title.
+// setWorkbook update workbook property of XLSX. Maximum 31 characters are
+// allowed in sheet title.
 func (f *File) setWorkbook(name string, sheetID, rid int) {
 	content := f.workbookReader()
 	content.Sheets.Sheet = append(content.Sheets.Sheet, xlsxSheet{
@@ -197,7 +192,7 @@ func (f *File) relsWriter() {
 		if rel != nil {
 			output, _ := xml.Marshal(rel)
 			if strings.HasPrefix(path, "xl/worksheets/sheet/rels/sheet") {
-				output = f.replaceNameSpaceBytes(path, output)
+				output = replaceRelationshipsNameSpaceBytes(output)
 			}
 			f.saveFileList(path, replaceRelationshipsBytes(output))
 		}
@@ -209,12 +204,12 @@ func (f *File) setAppXML() {
 	f.saveFileList("docProps/app.xml", []byte(templateDocpropsApp))
 }
 
-// replaceRelationshipsBytes; Some tools that read spreadsheet files have very
-// strict requirements about the structure of the input XML. This function is
-// a horrible hack to fix that after the XML marshalling is completed.
+// replaceRelationshipsBytes; Some tools that read XLSX files have very strict
+// requirements about the structure of the input XML. This function is a
+// horrible hack to fix that after the XML marshalling is completed.
 func replaceRelationshipsBytes(content []byte) []byte {
-	oldXmlns := []byte(`xmlns:relationships="http://schemas.openxmlformats.org/officeDocument/2006/relationships" relationships`)
-	newXmlns := []byte("r")
+	oldXmlns := stringToBytes(`xmlns:relationships="http://schemas.openxmlformats.org/officeDocument/2006/relationships" relationships`)
+	newXmlns := stringToBytes("r")
 	return bytesReplace(content, oldXmlns, newXmlns, -1)
 }
 
@@ -268,7 +263,7 @@ func (f *File) SetActiveSheet(index int) {
 }
 
 // GetActiveSheetIndex provides a function to get active sheet index of the
-// spreadsheet. If not found the active sheet will be return integer 0.
+// XLSX. If not found the active sheet will be return integer 0.
 func (f *File) GetActiveSheetIndex() (index int) {
 	var sheetID = f.getActiveSheetID()
 	wb := f.workbookReader()
@@ -283,7 +278,7 @@ func (f *File) GetActiveSheetIndex() (index int) {
 }
 
 // getActiveSheetID provides a function to get active sheet index of the
-// spreadsheet. If not found the active sheet will be return integer 0.
+// XLSX. If not found the active sheet will be return integer 0.
 func (f *File) getActiveSheetID() int {
 	wb := f.workbookReader()
 	if wb != nil {
@@ -318,9 +313,9 @@ func (f *File) SetSheetName(oldName, newName string) {
 	}
 }
 
-// getSheetNameByID provides a function to get worksheet name of the
-// spreadsheet by given worksheet ID. If given sheet ID is invalid, will
-// return an empty string.
+// getSheetNameByID provides a function to get worksheet name of XLSX by given
+// worksheet ID. If given sheet ID is invalid, will return an empty
+// string.
 func (f *File) getSheetNameByID(ID int) string {
 	wb := f.workbookReader()
 	if wb == nil || ID < 1 {
@@ -346,9 +341,9 @@ func (f *File) GetSheetName(index int) (name string) {
 	return
 }
 
-// getSheetID provides a function to get worksheet ID of the spreadsheet by
-// given sheet name. If given worksheet name is invalid, will return an
-// integer type value -1.
+// getSheetID provides a function to get worksheet ID of XLSX by given
+// sheet name. If given worksheet name is invalid, will return an integer type
+// value -1.
 func (f *File) getSheetID(name string) int {
 	var ID = -1
 	for sheetID, sheet := range f.GetSheetMap() {
@@ -444,7 +439,6 @@ func (f *File) SetSheetBackground(sheet, picture string) error {
 	sheetRels := "xl/worksheets/_rels/" + strings.TrimPrefix(f.sheetMap[trimSheetName(sheet)], "xl/worksheets/") + ".rels"
 	rID := f.addRels(sheetRels, SourceRelationshipImage, strings.Replace(name, "xl", "..", 1), "")
 	f.addSheetPicture(sheet, rID)
-	f.addSheetNameSpace(sheet, SourceRelationship)
 	f.setContentTypePartImageExtensions()
 	return err
 }
@@ -484,7 +478,6 @@ func (f *File) DeleteSheet(name string) {
 			delete(f.XLSX, rels)
 			delete(f.Relationships, rels)
 			delete(f.Sheet, sheetXML)
-			delete(f.xmlAttr, sheetXML)
 			f.SheetCount--
 		}
 	}
@@ -563,9 +556,6 @@ func (f *File) copySheet(from, to int) error {
 	if ok {
 		f.XLSX[toRels] = f.XLSX[fromRels]
 	}
-	fromSheetXMLPath, _ := f.sheetMap[trimSheetName(fromSheet)]
-	fromSheetAttr, _ := f.xmlAttr[fromSheetXMLPath]
-	f.xmlAttr[path] = fromSheetAttr
 	return err
 }
 
@@ -788,7 +778,7 @@ func (f *File) SearchSheet(sheet, value string, reg ...bool) ([]string, error) {
 	if f.Sheet[name] != nil {
 		// flush data
 		output, _ := xml.Marshal(f.Sheet[name])
-		f.saveFileList(name, f.replaceNameSpaceBytes(name, output))
+		f.saveFileList(name, replaceRelationshipsNameSpaceBytes(output))
 	}
 	return f.searchSheet(name, value, regSearch)
 }
@@ -1430,7 +1420,7 @@ func (f *File) GetDefinedName() []DefinedName {
 				RefersTo: dn.Data,
 				Scope:    "Workbook",
 			}
-			if dn.LocalSheetID != nil && *dn.LocalSheetID >= 0 {
+			if dn.LocalSheetID != nil {
 				definedName.Scope = f.getSheetNameByID(*dn.LocalSheetID + 1)
 			}
 			definedNames = append(definedNames, definedName)

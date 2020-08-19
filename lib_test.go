@@ -1,7 +1,6 @@
 package excelize
 
 import (
-	"encoding/xml"
 	"fmt"
 	"strconv"
 	"strings"
@@ -96,9 +95,6 @@ func TestColumnNumberToName_Error(t *testing.T) {
 	if assert.Error(t, err) {
 		assert.Equal(t, "", out)
 	}
-
-	_, err = ColumnNumberToName(TotalColumns + 1)
-	assert.EqualError(t, err, "column number exceeds maximum limit")
 }
 
 func TestSplitCellName_OK(t *testing.T) {
@@ -214,13 +210,6 @@ func TestCoordinatesToCellName_Error(t *testing.T) {
 func TestBytesReplace(t *testing.T) {
 	s := []byte{0x01}
 	assert.EqualValues(t, s, bytesReplace(s, []byte{}, []byte{}, 0))
-}
-
-func TestSetIgnorableNameSpace(t *testing.T) {
-	f := NewFile()
-	f.xmlAttr["xml_path"] = []xml.Attr{{}}
-	f.setIgnorableNameSpace("xml_path", 0, xml.Attr{Name: xml.Name{Local: "c14"}})
-	assert.EqualValues(t, "c14", f.xmlAttr["xml_path"][0].Value)
 }
 
 func TestStack(t *testing.T) {

@@ -83,11 +83,9 @@ func (f *File) AddTable(sheet, hcell, vcell, format string) error {
 	// Add first table for given sheet.
 	sheetRels := "xl/worksheets/_rels/" + strings.TrimPrefix(f.sheetMap[trimSheetName(sheet)], "xl/worksheets/") + ".rels"
 	rID := f.addRels(sheetRels, SourceRelationshipTable, sheetRelationshipsTableXML, "")
-	if err = f.addSheetTable(sheet, rID); err != nil {
-		return err
-	}
-	f.addSheetNameSpace(sheet, SourceRelationship)
-	if err = f.addTable(sheet, tableXML, hcol, hrow, vcol, vrow, tableID, formatSet); err != nil {
+	f.addSheetTable(sheet, rID)
+	err = f.addTable(sheet, tableXML, hcol, hrow, vcol, vrow, tableID, formatSet)
+	if err != nil {
 		return err
 	}
 	f.addContentTypePart(tableID, "table")
@@ -108,20 +106,16 @@ func (f *File) countTables() int {
 
 // addSheetTable provides a function to add tablePart element to
 // xl/worksheets/sheet%d.xml by given worksheet name and relationship index.
-func (f *File) addSheetTable(sheet string, rID int) error {
-	ws, err := f.workSheetReader(sheet)
-	if err != nil {
-		return err
-	}
+func (f *File) addSheetTable(sheet string, rID int) {
+	xlsx, _ := f.workSheetReader(sheet)
 	table := &xlsxTablePart{
 		RID: "rId" + strconv.Itoa(rID),
 	}
-	if ws.TableParts == nil {
-		ws.TableParts = &xlsxTableParts{}
+	if xlsx.TableParts == nil {
+		xlsx.TableParts = &xlsxTableParts{}
 	}
-	ws.TableParts.Count++
-	ws.TableParts.TableParts = append(ws.TableParts.TableParts, table)
-	return err
+	xlsx.TableParts.Count++
+	xlsx.TableParts.TableParts = append(xlsx.TableParts.TableParts, table)
 }
 
 // addTable provides a function to add table by given worksheet name,
@@ -165,7 +159,7 @@ func (f *File) addTable(sheet, tableXML string, x1, y1, x2, y2, i int, formatSet
 		name = "Table" + strconv.Itoa(i)
 	}
 	t := xlsxTable{
-		XMLNS:       NameSpaceSpreadSheet.Value,
+		XMLNS:       NameSpaceSpreadSheet,
 		ID:          i,
 		Name:        name,
 		DisplayName: name,
@@ -287,8 +281,14 @@ func (f *File) AutoFilter(sheet, hcell, vcell, format string) error {
 	}
 
 	formatSet, _ := parseAutoFilterSet(format)
-	cellStart, _ := CoordinatesToCellName(hcol, hrow)
-	cellEnd, _ := CoordinatesToCellName(vcol, vrow)
+
+	var cellStart, cellEnd string
+	if cellStart, err = CoordinatesToCellName(hcol, hrow); err != nil {
+		return err
+	}
+	if cellEnd, err = CoordinatesToCellName(vcol, vrow); err != nil {
+		return err
+	}
 	ref, filterDB := cellStart+":"+cellEnd, "_xlnm._FilterDatabase"
 	wb := f.workbookReader()
 	sheetID := f.GetSheetIndex(sheet)
