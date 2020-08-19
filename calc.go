@@ -19,8 +19,6 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
-	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,39 +53,10 @@ type cellRange struct {
 	To   cellRef
 }
 
-// formula criteria condition enumeration.
-const (
-	_ byte = iota
-	criteriaEq
-	criteriaLe
-	criteriaGe
-	criteriaL
-	criteriaG
-	criteriaBeg
-	criteriaEnd
-)
-
-// formulaCriteria defined formula criteria parser result.
-type formulaCriteria struct {
-	Type      byte
-	Condition string
-}
-
-// ArgType is the type if formula argument type.
-type ArgType byte
-
-// Formula argument types enumeration.
-const (
-	ArgUnknown ArgType = iota
-	ArgString
-	ArgMatrix
-)
-
 // formulaArg is the argument of a formula or function.
 type formulaArg struct {
-	String string
-	Matrix [][]formulaArg
-	Type   ArgType
+	Value  string
+	Matrix []string
 }
 
 // formulaFuncs is the type of the formula functions.
@@ -181,30 +150,36 @@ func (f *File) evalInfixExp(sheet string, tokens []efp.Token) (efp.Token, error)
 			if token.TSubType == efp.TokenSubTypeRange {
 				if !opftStack.Empty() {
 					// parse reference: must reference at here
-					result, err := f.parseReference(sheet, token.TValue)
+					result, _, err := f.parseReference(sheet, token.TValue)
 					if err != nil {
 						return efp.Token{TValue: formulaErrorNAME}, err
 					}
-					if result.Type != ArgString {
+					if len(result) != 1 {
 						return efp.Token{}, errors.New(formulaErrorVALUE)
 					}
 					opfdStack.Push(efp.Token{
 						TType:    efp.TokenTypeOperand,
 						TSubType: efp.TokenSubTypeNumber,
-						TValue:   result.String,
+						TValue:   result[0],
 					})
 					continue
 				}
 				if nextToken.TType == efp.TokenTypeArgument || nextToken.TType == efp.TokenTypeFunction {
 					// parse reference: reference or range at here
-					result, err := f.parseReference(sheet, token.TValue)
+					result, matrix, err := f.parseReference(sheet, token.TValue)
 					if err != nil {
 						return efp.Token{TValue: formulaErrorNAME}, err
 					}
-					if result.Type == ArgUnknown {
+					for idx, val := range result {
+						arg := formulaArg{Value: val}
+						if idx < len(matrix) {
+							arg.Matrix = matrix[idx]
+						}
+						argsList.PushBack(arg)
+					}
+					if len(result) == 0 {
 						return efp.Token{}, errors.New(formulaErrorVALUE)
 					}
-					argsList.PushBack(result)
 					continue
 				}
 			}
@@ -226,8 +201,7 @@ func (f *File) evalInfixExp(sheet string, tokens []efp.Token) (efp.Token, error)
 				}
 				if !opfdStack.Empty() {
 					argsList.PushBack(formulaArg{
-						String: opfdStack.Pop().(efp.Token).TValue,
-						Type:   ArgString,
+						Value: opfdStack.Pop().(efp.Token).TValue,
 					})
 				}
 				continue
@@ -240,8 +214,7 @@ func (f *File) evalInfixExp(sheet string, tokens []efp.Token) (efp.Token, error)
 			// current token is text
 			if token.TType == efp.TokenTypeOperand && token.TSubType == efp.TokenSubTypeText {
 				argsList.PushBack(formulaArg{
-					String: token.TValue,
-					Type:   ArgString,
+					Value: token.TValue,
 				})
 			}
 
@@ -259,8 +232,7 @@ func (f *File) evalInfixExp(sheet string, tokens []efp.Token) (efp.Token, error)
 				// push opfd to args
 				if opfdStack.Len() > 0 {
 					argsList.PushBack(formulaArg{
-						String: opfdStack.Pop().(efp.Token).TValue,
-						Type:   ArgString,
+						Value: opfdStack.Pop().(efp.Token).TValue,
 					})
 				}
 				// call formula function to evaluate
@@ -313,7 +285,7 @@ func calcAdd(opdStack *Stack) error {
 	return nil
 }
 
-// calcSubtract evaluate subtraction arithmetic operations.
+// calcAdd evaluate subtraction arithmetic operations.
 func calcSubtract(opdStack *Stack) error {
 	if opdStack.Len() < 2 {
 		return errors.New("formula not valid")
@@ -333,7 +305,7 @@ func calcSubtract(opdStack *Stack) error {
 	return nil
 }
 
-// calcMultiply evaluate multiplication arithmetic operations.
+// calcAdd evaluate multiplication arithmetic operations.
 func calcMultiply(opdStack *Stack) error {
 	if opdStack.Len() < 2 {
 		return errors.New("formula not valid")
@@ -353,7 +325,7 @@ func calcMultiply(opdStack *Stack) error {
 	return nil
 }
 
-// calcDivide evaluate division arithmetic operations.
+// calcAdd evaluate division arithmetic operations.
 func calcDivide(opdStack *Stack) error {
 	if opdStack.Len() < 2 {
 		return errors.New("formula not valid")
@@ -479,10 +451,10 @@ func (f *File) parseToken(sheet string, token efp.Token, opdStack, optStack *Sta
 		if err != nil {
 			return errors.New(formulaErrorNAME)
 		}
-		if result.Type != ArgString {
+		if len(result) != 1 {
 			return errors.New(formulaErrorVALUE)
 		}
-		token.TValue = result.String
+		token.TValue = result[0]
 		token.TType = efp.TokenTypeOperand
 		token.TSubType = efp.TokenSubTypeNumber
 	}
@@ -513,7 +485,7 @@ func (f *File) parseToken(sheet string, token efp.Token, opdStack, optStack *Sta
 
 // parseReference parse reference and extract values by given reference
 // characters and default sheet name.
-func (f *File) parseReference(sheet, reference string) (arg formulaArg, err error) {
+func (f *File) parseReference(sheet, reference string) (result []string, matrix [][]string, err error) {
 	reference = strings.Replace(reference, "$", "", -1)
 	refs, cellRanges, cellRefs := list.New(), list.New(), list.New()
 	for _, ref := range strings.Split(reference, ":") {
@@ -552,38 +524,39 @@ func (f *File) parseReference(sheet, reference string) (arg formulaArg, err erro
 		cellRefs.PushBack(e.Value.(cellRef))
 		refs.Remove(e)
 	}
-	arg, err = f.rangeResolver(cellRefs, cellRanges)
+
+	result, matrix, err = f.rangeResolver(cellRefs, cellRanges)
 	return
 }
 
 // prepareValueRange prepare value range.
 func prepareValueRange(cr cellRange, valueRange []int) {
-	if cr.From.Row < valueRange[0] || valueRange[0] == 0 {
+	if cr.From.Row < valueRange[0] {
 		valueRange[0] = cr.From.Row
 	}
-	if cr.From.Col < valueRange[2] || valueRange[2] == 0 {
+	if cr.From.Col < valueRange[2] {
 		valueRange[2] = cr.From.Col
 	}
-	if cr.To.Row > valueRange[1] || valueRange[1] == 0 {
+	if cr.To.Row > valueRange[0] {
 		valueRange[1] = cr.To.Row
 	}
-	if cr.To.Col > valueRange[3] || valueRange[3] == 0 {
+	if cr.To.Col > valueRange[3] {
 		valueRange[3] = cr.To.Col
 	}
 }
 
 // prepareValueRef prepare value reference.
 func prepareValueRef(cr cellRef, valueRange []int) {
-	if cr.Row < valueRange[0] || valueRange[0] == 0 {
+	if cr.Row < valueRange[0] {
 		valueRange[0] = cr.Row
 	}
-	if cr.Col < valueRange[2] || valueRange[2] == 0 {
+	if cr.Col < valueRange[2] {
 		valueRange[2] = cr.Col
 	}
-	if cr.Row > valueRange[1] || valueRange[1] == 0 {
+	if cr.Row > valueRange[0] {
 		valueRange[1] = cr.Row
 	}
-	if cr.Col > valueRange[3] || valueRange[3] == 0 {
+	if cr.Col > valueRange[3] {
 		valueRange[3] = cr.Col
 	}
 }
@@ -591,10 +564,11 @@ func prepareValueRef(cr cellRef, valueRange []int) {
 // rangeResolver extract value as string from given reference and range list.
 // This function will not ignore the empty cell. For example, A1:A2:A2:B3 will
 // be reference A1:B3.
-func (f *File) rangeResolver(cellRefs, cellRanges *list.List) (arg formulaArg, err error) {
+func (f *File) rangeResolver(cellRefs, cellRanges *list.List) (result []string, matrix [][]string, err error) {
 	// value range order: from row, to row, from column, to column
-	valueRange := []int{0, 0, 0, 0}
+	valueRange := []int{1, 1, 1, 1}
 	var sheet string
+	filter := map[string]string{}
 	// prepare value range
 	for temp := cellRanges.Front(); temp != nil; temp = temp.Next() {
 		cr := temp.Value.(cellRange)
@@ -603,7 +577,6 @@ func (f *File) rangeResolver(cellRefs, cellRanges *list.List) (arg formulaArg, e
 		}
 		rng := []int{cr.From.Col, cr.From.Row, cr.To.Col, cr.To.Row}
 		sortCoordinates(rng)
-		cr.From.Col, cr.From.Row, cr.To.Col, cr.To.Row = rng[0], rng[1], rng[2], rng[3]
 		prepareValueRange(cr, valueRange)
 		if cr.From.Sheet != "" {
 			sheet = cr.From.Sheet
@@ -618,9 +591,8 @@ func (f *File) rangeResolver(cellRefs, cellRanges *list.List) (arg formulaArg, e
 	}
 	// extract value from ranges
 	if cellRanges.Len() > 0 {
-		arg.Type = ArgMatrix
 		for row := valueRange[0]; row <= valueRange[1]; row++ {
-			var matrixRow = []formulaArg{}
+			var matrixRow = []string{}
 			for col := valueRange[2]; col <= valueRange[3]; col++ {
 				var cell, value string
 				if cell, err = CoordinatesToCellName(col, row); err != nil {
@@ -629,12 +601,11 @@ func (f *File) rangeResolver(cellRefs, cellRanges *list.List) (arg formulaArg, e
 				if value, err = f.GetCellValue(sheet, cell); err != nil {
 					return
 				}
-				matrixRow = append(matrixRow, formulaArg{
-					String: value,
-					Type:   ArgString,
-				})
+				filter[cell] = value
+				matrixRow = append(matrixRow, value)
+				result = append(result, value)
 			}
-			arg.Matrix = append(arg.Matrix, matrixRow)
+			matrix = append(matrix, matrixRow)
 		}
 		return
 	}
@@ -645,10 +616,13 @@ func (f *File) rangeResolver(cellRefs, cellRanges *list.List) (arg formulaArg, e
 		if cell, err = CoordinatesToCellName(cr.Col, cr.Row); err != nil {
 			return
 		}
-		if arg.String, err = f.GetCellValue(cr.Sheet, cell); err != nil {
+		if filter[cell], err = f.GetCellValue(cr.Sheet, cell); err != nil {
 			return
 		}
-		arg.Type = ArgString
+	}
+
+	for _, val := range filter {
+		result = append(result, val)
 	}
 	return
 }
@@ -673,90 +647,6 @@ func callFuncByName(receiver interface{}, name string, params []reflect.Value) (
 	return
 }
 
-// formulaCriteriaParser parse formula criteria.
-func formulaCriteriaParser(exp string) (fc *formulaCriteria) {
-	fc = &formulaCriteria{}
-	if exp == "" {
-		return
-	}
-	if match := regexp.MustCompile(`^([0-9]+)$`).FindStringSubmatch(exp); len(match) > 1 {
-		fc.Type, fc.Condition = criteriaEq, match[1]
-		return
-	}
-	if match := regexp.MustCompile(`^=(.*)$`).FindStringSubmatch(exp); len(match) > 1 {
-		fc.Type, fc.Condition = criteriaEq, match[1]
-		return
-	}
-	if match := regexp.MustCompile(`^<(.*)$`).FindStringSubmatch(exp); len(match) > 1 {
-		fc.Type, fc.Condition = criteriaLe, match[1]
-		return
-	}
-	if match := regexp.MustCompile(`^>(.*)$`).FindStringSubmatch(exp); len(match) > 1 {
-		fc.Type, fc.Condition = criteriaGe, match[1]
-		return
-	}
-	if match := regexp.MustCompile(`^<=(.*)$`).FindStringSubmatch(exp); len(match) > 1 {
-		fc.Type, fc.Condition = criteriaL, match[1]
-		return
-	}
-	if match := regexp.MustCompile(`^>=(.*)$`).FindStringSubmatch(exp); len(match) > 1 {
-		fc.Type, fc.Condition = criteriaG, match[1]
-		return
-	}
-	if strings.Contains(exp, "*") {
-		if strings.HasPrefix(exp, "*") {
-			fc.Type, fc.Condition = criteriaEnd, strings.TrimPrefix(exp, "*")
-		}
-		if strings.HasSuffix(exp, "*") {
-			fc.Type, fc.Condition = criteriaBeg, strings.TrimSuffix(exp, "*")
-		}
-		return
-	}
-	fc.Type, fc.Condition = criteriaEq, exp
-	return
-}
-
-// formulaCriteriaEval evaluate formula criteria expression.
-func formulaCriteriaEval(val string, criteria *formulaCriteria) (result bool, err error) {
-	var value, expected float64
-	var prepareValue = func(val, cond string) (value float64, expected float64, err error) {
-		value, _ = strconv.ParseFloat(val, 64)
-		if expected, err = strconv.ParseFloat(criteria.Condition, 64); err != nil {
-			return
-		}
-		return
-	}
-	switch criteria.Type {
-	case criteriaEq:
-		return val == criteria.Condition, err
-	case criteriaLe:
-		if value, expected, err = prepareValue(val, criteria.Condition); err != nil {
-			return
-		}
-		return value <= expected, err
-	case criteriaGe:
-		if value, expected, err = prepareValue(val, criteria.Condition); err != nil {
-			return
-		}
-		return value >= expected, err
-	case criteriaL:
-		if value, expected, err = prepareValue(val, criteria.Condition); err != nil {
-			return
-		}
-		return value < expected, err
-	case criteriaG:
-		if value, expected, err = prepareValue(val, criteria.Condition); err != nil {
-			return
-		}
-		return value > expected, err
-	case criteriaBeg:
-		return strings.HasPrefix(val, criteria.Condition), err
-	case criteriaEnd:
-		return strings.HasSuffix(val, criteria.Condition), err
-	}
-	return
-}
-
 // Math and Trigonometric functions
 
 // ABS function returns the absolute value of any supplied number. The syntax
@@ -770,7 +660,7 @@ func (fn *formulaFuncs) ABS(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -790,7 +680,7 @@ func (fn *formulaFuncs) ACOS(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -809,7 +699,7 @@ func (fn *formulaFuncs) ACOSH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -829,7 +719,7 @@ func (fn *formulaFuncs) ACOT(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -848,7 +738,7 @@ func (fn *formulaFuncs) ACOTH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -868,7 +758,7 @@ func (fn *formulaFuncs) ARABIC(argsList *list.List) (result string, err error) {
 	}
 	charMap := map[rune]float64{'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
 	val, last, prefix := 0.0, 0.0, 1.0
-	for _, char := range argsList.Front().Value.(formulaArg).String {
+	for _, char := range argsList.Front().Value.(formulaArg).Value {
 		digit := 0.0
 		if char == '-' {
 			prefix = -1
@@ -905,7 +795,7 @@ func (fn *formulaFuncs) ASIN(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -924,7 +814,7 @@ func (fn *formulaFuncs) ASINH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -944,7 +834,7 @@ func (fn *formulaFuncs) ATAN(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -963,7 +853,7 @@ func (fn *formulaFuncs) ATANH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -983,11 +873,11 @@ func (fn *formulaFuncs) ATAN2(argsList *list.List) (result string, err error) {
 		return
 	}
 	var x, y float64
-	if x, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if x, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if y, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if y, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1011,11 +901,11 @@ func (fn *formulaFuncs) BASE(argsList *list.List) (result string, err error) {
 	}
 	var number float64
 	var radix, minLength int
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if radix, err = strconv.Atoi(argsList.Front().Next().Value.(formulaArg).String); err != nil {
+	if radix, err = strconv.Atoi(argsList.Front().Next().Value.(formulaArg).Value); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1024,7 +914,7 @@ func (fn *formulaFuncs) BASE(argsList *list.List) (result string, err error) {
 		return
 	}
 	if argsList.Len() > 2 {
-		if minLength, err = strconv.Atoi(argsList.Back().Value.(formulaArg).String); err != nil {
+		if minLength, err = strconv.Atoi(argsList.Back().Value.(formulaArg).Value); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1052,7 +942,7 @@ func (fn *formulaFuncs) CEILING(argsList *list.List) (result string, err error) 
 		return
 	}
 	number, significance, res := 0.0, 1.0, 0.0
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1060,7 +950,7 @@ func (fn *formulaFuncs) CEILING(argsList *list.List) (result string, err error) 
 		significance = -1
 	}
 	if argsList.Len() > 1 {
-		if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+		if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1096,7 +986,7 @@ func (fn *formulaFuncs) CEILINGMATH(argsList *list.List) (result string, err err
 		return
 	}
 	number, significance, mode := 0.0, 1.0, 1.0
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1104,7 +994,7 @@ func (fn *formulaFuncs) CEILINGMATH(argsList *list.List) (result string, err err
 		significance = -1
 	}
 	if argsList.Len() > 1 {
-		if significance, err = strconv.ParseFloat(argsList.Front().Next().Value.(formulaArg).String, 64); err != nil {
+		if significance, err = strconv.ParseFloat(argsList.Front().Next().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1114,7 +1004,7 @@ func (fn *formulaFuncs) CEILINGMATH(argsList *list.List) (result string, err err
 		return
 	}
 	if argsList.Len() > 2 {
-		if mode, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+		if mode, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1147,7 +1037,7 @@ func (fn *formulaFuncs) CEILINGPRECISE(argsList *list.List) (result string, err 
 		return
 	}
 	number, significance := 0.0, 1.0
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1159,7 +1049,7 @@ func (fn *formulaFuncs) CEILINGPRECISE(argsList *list.List) (result string, err 
 		return
 	}
 	if argsList.Len() > 1 {
-		if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+		if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1190,11 +1080,11 @@ func (fn *formulaFuncs) COMBIN(argsList *list.List) (result string, err error) {
 		return
 	}
 	number, chosen, val := 0.0, 0.0, 1.0
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if chosen, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if chosen, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1225,11 +1115,11 @@ func (fn *formulaFuncs) COMBINA(argsList *list.List) (result string, err error) 
 		return
 	}
 	var number, chosen float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if chosen, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if chosen, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1244,12 +1134,10 @@ func (fn *formulaFuncs) COMBINA(argsList *list.List) (result string, err error) 
 	}
 	args := list.New()
 	args.PushBack(formulaArg{
-		String: fmt.Sprintf("%g", number+chosen-1),
-		Type:   ArgString,
+		Value: fmt.Sprintf("%g", number+chosen-1),
 	})
 	args.PushBack(formulaArg{
-		String: fmt.Sprintf("%g", number-1),
-		Type:   ArgString,
+		Value: fmt.Sprintf("%g", number-1),
 	})
 	return fn.COMBIN(args)
 }
@@ -1265,7 +1153,7 @@ func (fn *formulaFuncs) COS(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1284,7 +1172,7 @@ func (fn *formulaFuncs) COSH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1303,7 +1191,7 @@ func (fn *formulaFuncs) COT(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1326,7 +1214,7 @@ func (fn *formulaFuncs) COTH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1349,7 +1237,7 @@ func (fn *formulaFuncs) CSC(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1372,7 +1260,7 @@ func (fn *formulaFuncs) CSCH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1394,9 +1282,9 @@ func (fn *formulaFuncs) DECIMAL(argsList *list.List) (result string, err error) 
 		err = errors.New("DECIMAL requires 2 numeric arguments")
 		return
 	}
-	var text = argsList.Front().Value.(formulaArg).String
+	var text = argsList.Front().Value.(formulaArg).Value
 	var radix int
-	if radix, err = strconv.Atoi(argsList.Back().Value.(formulaArg).String); err != nil {
+	if radix, err = strconv.Atoi(argsList.Back().Value.(formulaArg).Value); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1423,7 +1311,7 @@ func (fn *formulaFuncs) DEGREES(argsList *list.List) (result string, err error) 
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1447,7 +1335,7 @@ func (fn *formulaFuncs) EVEN(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1476,7 +1364,7 @@ func (fn *formulaFuncs) EXP(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1504,7 +1392,7 @@ func (fn *formulaFuncs) FACT(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1526,7 +1414,7 @@ func (fn *formulaFuncs) FACTDOUBLE(argsList *list.List) (result string, err erro
 		return
 	}
 	number, val := 0.0, 1.0
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1552,11 +1440,11 @@ func (fn *formulaFuncs) FLOOR(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number, significance float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1590,7 +1478,7 @@ func (fn *formulaFuncs) FLOORMATH(argsList *list.List) (result string, err error
 		return
 	}
 	number, significance, mode := 0.0, 1.0, 1.0
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1598,7 +1486,7 @@ func (fn *formulaFuncs) FLOORMATH(argsList *list.List) (result string, err error
 		significance = -1
 	}
 	if argsList.Len() > 1 {
-		if significance, err = strconv.ParseFloat(argsList.Front().Next().Value.(formulaArg).String, 64); err != nil {
+		if significance, err = strconv.ParseFloat(argsList.Front().Next().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1608,7 +1496,7 @@ func (fn *formulaFuncs) FLOORMATH(argsList *list.List) (result string, err error
 		return
 	}
 	if argsList.Len() > 2 {
-		if mode, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+		if mode, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1636,7 +1524,7 @@ func (fn *formulaFuncs) FLOORPRECISE(argsList *list.List) (result string, err er
 		return
 	}
 	var number, significance float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1648,7 +1536,7 @@ func (fn *formulaFuncs) FLOORPRECISE(argsList *list.List) (result string, err er
 		return
 	}
 	if argsList.Len() > 1 {
-		if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+		if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1702,7 +1590,7 @@ func (fn *formulaFuncs) GCD(argsList *list.List) (result string, err error) {
 		nums = []float64{}
 	)
 	for arg := argsList.Front(); arg != nil; arg = arg.Next() {
-		token := arg.Value.(formulaArg).String
+		token := arg.Value.(formulaArg).Value
 		if token == "" {
 			continue
 		}
@@ -1743,7 +1631,7 @@ func (fn *formulaFuncs) INT(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1771,7 +1659,7 @@ func (fn *formulaFuncs) ISOCEILING(argsList *list.List) (result string, err erro
 		return
 	}
 	var number, significance float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1783,7 +1671,7 @@ func (fn *formulaFuncs) ISOCEILING(argsList *list.List) (result string, err erro
 		return
 	}
 	if argsList.Len() > 1 {
-		if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+		if significance, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1828,7 +1716,7 @@ func (fn *formulaFuncs) LCM(argsList *list.List) (result string, err error) {
 		nums = []float64{}
 	)
 	for arg := argsList.Front(); arg != nil; arg = arg.Next() {
-		token := arg.Value.(formulaArg).String
+		token := arg.Value.(formulaArg).Value
 		if token == "" {
 			continue
 		}
@@ -1869,7 +1757,7 @@ func (fn *formulaFuncs) LN(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1892,12 +1780,12 @@ func (fn *formulaFuncs) LOG(argsList *list.List) (result string, err error) {
 		return
 	}
 	number, base := 0.0, 10.0
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
 	if argsList.Len() > 1 {
-		if base, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+		if base, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -1929,7 +1817,7 @@ func (fn *formulaFuncs) LOG10(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -1979,20 +1867,24 @@ func det(sqMtx [][]float64) float64 {
 //
 func (fn *formulaFuncs) MDETERM(argsList *list.List) (result string, err error) {
 	var num float64
+	var rows int
 	var numMtx = [][]float64{}
-	var strMtx = argsList.Front().Value.(formulaArg).Matrix
-	if argsList.Len() < 1 {
-		return
+	var strMtx = [][]string{}
+	for arg := argsList.Front(); arg != nil; arg = arg.Next() {
+		if len(arg.Value.(formulaArg).Matrix) == 0 {
+			break
+		}
+		strMtx = append(strMtx, arg.Value.(formulaArg).Matrix)
+		rows++
 	}
-	var rows = len(strMtx)
-	for _, row := range argsList.Front().Value.(formulaArg).Matrix {
+	for _, row := range strMtx {
 		if len(row) != rows {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
 		numRow := []float64{}
 		for _, ele := range row {
-			if num, err = strconv.ParseFloat(ele.String, 64); err != nil {
+			if num, err = strconv.ParseFloat(ele, 64); err != nil {
 				return
 			}
 			numRow = append(numRow, num)
@@ -2014,11 +1906,11 @@ func (fn *formulaFuncs) MOD(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number, divisor float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if divisor, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if divisor, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2045,11 +1937,11 @@ func (fn *formulaFuncs) MROUND(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number, multiple float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if multiple, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if multiple, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2080,10 +1972,10 @@ func (fn *formulaFuncs) MULTINOMIAL(argsList *list.List) (result string, err err
 	val, num, denom := 0.0, 0.0, 1.0
 	for arg := argsList.Front(); arg != nil; arg = arg.Next() {
 		token := arg.Value.(formulaArg)
-		if token.String == "" {
+		if token.Value == "" {
 			continue
 		}
-		if val, err = strconv.ParseFloat(token.String, 64); err != nil {
+		if val, err = strconv.ParseFloat(token.Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -2105,7 +1997,7 @@ func (fn *formulaFuncs) MUNIT(argsList *list.List) (result string, err error) {
 		return
 	}
 	var dimension int
-	if dimension, err = strconv.Atoi(argsList.Front().Value.(formulaArg).String); err != nil {
+	if dimension, err = strconv.Atoi(argsList.Front().Value.(formulaArg).Value); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2136,7 +2028,7 @@ func (fn *formulaFuncs) ODD(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2183,11 +2075,11 @@ func (fn *formulaFuncs) POWER(argsList *list.List) (result string, err error) {
 		return
 	}
 	var x, y float64
-	if x, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if x, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if y, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if y, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2212,32 +2104,14 @@ func (fn *formulaFuncs) PRODUCT(argsList *list.List) (result string, err error) 
 	val, product := 0.0, 1.0
 	for arg := argsList.Front(); arg != nil; arg = arg.Next() {
 		token := arg.Value.(formulaArg)
-		switch token.Type {
-		case ArgUnknown:
+		if token.Value == "" {
 			continue
-		case ArgString:
-			if token.String == "" {
-				continue
-			}
-			if val, err = strconv.ParseFloat(token.String, 64); err != nil {
-				err = errors.New(formulaErrorVALUE)
-				return
-			}
-			product = product * val
-		case ArgMatrix:
-			for _, row := range token.Matrix {
-				for _, value := range row {
-					if value.String == "" {
-						continue
-					}
-					if val, err = strconv.ParseFloat(value.String, 64); err != nil {
-						err = errors.New(formulaErrorVALUE)
-						return
-					}
-					product = product * val
-				}
-			}
 		}
+		if val, err = strconv.ParseFloat(token.Value, 64); err != nil {
+			err = errors.New(formulaErrorVALUE)
+			return
+		}
+		product = product * val
 	}
 	result = fmt.Sprintf("%g", product)
 	return
@@ -2254,11 +2128,11 @@ func (fn *formulaFuncs) QUOTIENT(argsList *list.List) (result string, err error)
 		return
 	}
 	var x, y float64
-	if x, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if x, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if y, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if y, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2280,7 +2154,7 @@ func (fn *formulaFuncs) RADIANS(argsList *list.List) (result string, err error) 
 		return
 	}
 	var angle float64
-	if angle, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if angle, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2313,11 +2187,11 @@ func (fn *formulaFuncs) RANDBETWEEN(argsList *list.List) (result string, err err
 		return
 	}
 	var bottom, top int64
-	if bottom, err = strconv.ParseInt(argsList.Front().Value.(formulaArg).String, 10, 64); err != nil {
+	if bottom, err = strconv.ParseInt(argsList.Front().Value.(formulaArg).Value, 10, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if top, err = strconv.ParseInt(argsList.Back().Value.(formulaArg).String, 10, 64); err != nil {
+	if top, err = strconv.ParseInt(argsList.Back().Value.(formulaArg).Value, 10, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2360,12 +2234,12 @@ func (fn *formulaFuncs) ROMAN(argsList *list.List) (result string, err error) {
 	}
 	var number float64
 	var form int
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
 	if argsList.Len() > 1 {
-		if form, err = strconv.Atoi(argsList.Back().Value.(formulaArg).String); err != nil {
+		if form, err = strconv.Atoi(argsList.Back().Value.(formulaArg).Value); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -2445,11 +2319,11 @@ func (fn *formulaFuncs) ROUND(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number, digits float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2468,11 +2342,11 @@ func (fn *formulaFuncs) ROUNDDOWN(argsList *list.List) (result string, err error
 		return
 	}
 	var number, digits float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2491,11 +2365,11 @@ func (fn *formulaFuncs) ROUNDUP(argsList *list.List) (result string, err error) 
 		return
 	}
 	var number, digits float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
-	if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+	if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2514,7 +2388,7 @@ func (fn *formulaFuncs) SEC(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2533,7 +2407,7 @@ func (fn *formulaFuncs) SECH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2554,7 +2428,7 @@ func (fn *formulaFuncs) SIGN(argsList *list.List) (result string, err error) {
 		return
 	}
 	var val float64
-	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if val, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2581,7 +2455,7 @@ func (fn *formulaFuncs) SIN(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2600,7 +2474,7 @@ func (fn *formulaFuncs) SINH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2619,7 +2493,7 @@ func (fn *formulaFuncs) SQRT(argsList *list.List) (result string, err error) {
 		return
 	}
 	var res float64
-	var value = argsList.Front().Value.(formulaArg).String
+	var value = argsList.Front().Value.(formulaArg).Value
 	if value == "" {
 		result = "0"
 		return
@@ -2647,7 +2521,7 @@ func (fn *formulaFuncs) SQRTPI(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2664,79 +2538,14 @@ func (fn *formulaFuncs) SUM(argsList *list.List) (result string, err error) {
 	var val, sum float64
 	for arg := argsList.Front(); arg != nil; arg = arg.Next() {
 		token := arg.Value.(formulaArg)
-		switch token.Type {
-		case ArgUnknown:
+		if token.Value == "" {
 			continue
-		case ArgString:
-			if token.String == "" {
-				continue
-			}
-			if val, err = strconv.ParseFloat(token.String, 64); err != nil {
-				err = errors.New(formulaErrorVALUE)
-				return
-			}
-			sum += val
-		case ArgMatrix:
-			for _, row := range token.Matrix {
-				for _, value := range row {
-					if value.String == "" {
-						continue
-					}
-					if val, err = strconv.ParseFloat(value.String, 64); err != nil {
-						err = errors.New(formulaErrorVALUE)
-						return
-					}
-					sum += val
-				}
-			}
 		}
-	}
-	result = fmt.Sprintf("%g", sum)
-	return
-}
-
-// SUMIF function finds the values in a supplied array, that satisfy a given
-// criteria, and returns the sum of the corresponding values in a second
-// supplied array. The syntax of the function is:
-//
-//    SUMIF(range,criteria,[sum_range])
-//
-func (fn *formulaFuncs) SUMIF(argsList *list.List) (result string, err error) {
-	if argsList.Len() < 2 {
-		err = errors.New("SUMIF requires at least 2 argument")
-		return
-	}
-	var criteria = formulaCriteriaParser(argsList.Front().Next().Value.(formulaArg).String)
-	var rangeMtx = argsList.Front().Value.(formulaArg).Matrix
-	var sumRange [][]formulaArg
-	if argsList.Len() == 3 {
-		sumRange = argsList.Back().Value.(formulaArg).Matrix
-	}
-	var sum, val float64
-	for rowIdx, row := range rangeMtx {
-		for colIdx, col := range row {
-			var ok bool
-			fromVal := col.String
-			if col.String == "" {
-				continue
-			}
-			if ok, err = formulaCriteriaEval(fromVal, criteria); err != nil {
-				return
-			}
-			if ok {
-				if argsList.Len() == 3 {
-					if len(sumRange) <= rowIdx || len(sumRange[rowIdx]) <= colIdx {
-						continue
-					}
-					fromVal = sumRange[rowIdx][colIdx].String
-				}
-				if val, err = strconv.ParseFloat(fromVal, 64); err != nil {
-					err = errors.New(formulaErrorVALUE)
-					return
-				}
-				sum += val
-			}
+		if val, err = strconv.ParseFloat(token.Value, 64); err != nil {
+			err = errors.New(formulaErrorVALUE)
+			return
 		}
+		sum += val
 	}
 	result = fmt.Sprintf("%g", sum)
 	return
@@ -2751,30 +2560,14 @@ func (fn *formulaFuncs) SUMSQ(argsList *list.List) (result string, err error) {
 	var val, sq float64
 	for arg := argsList.Front(); arg != nil; arg = arg.Next() {
 		token := arg.Value.(formulaArg)
-		switch token.Type {
-		case ArgString:
-			if token.String == "" {
-				continue
-			}
-			if val, err = strconv.ParseFloat(token.String, 64); err != nil {
-				err = errors.New(formulaErrorVALUE)
-				return
-			}
-			sq += val * val
-		case ArgMatrix:
-			for _, row := range token.Matrix {
-				for _, value := range row {
-					if value.String == "" {
-						continue
-					}
-					if val, err = strconv.ParseFloat(value.String, 64); err != nil {
-						err = errors.New(formulaErrorVALUE)
-						return
-					}
-					sq += val * val
-				}
-			}
+		if token.Value == "" {
+			continue
 		}
+		if val, err = strconv.ParseFloat(token.Value, 64); err != nil {
+			err = errors.New(formulaErrorVALUE)
+			return
+		}
+		sq += val * val
 	}
 	result = fmt.Sprintf("%g", sq)
 	return
@@ -2791,7 +2584,7 @@ func (fn *formulaFuncs) TAN(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2810,7 +2603,7 @@ func (fn *formulaFuncs) TANH(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
@@ -2829,12 +2622,12 @@ func (fn *formulaFuncs) TRUNC(argsList *list.List) (result string, err error) {
 		return
 	}
 	var number, digits, adjust, rtrim float64
-	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).String, 64); err != nil {
+	if number, err = strconv.ParseFloat(argsList.Front().Value.(formulaArg).Value, 64); err != nil {
 		err = errors.New(formulaErrorVALUE)
 		return
 	}
 	if argsList.Len() > 1 {
-		if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
+		if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).Value, 64); err != nil {
 			err = errors.New(formulaErrorVALUE)
 			return
 		}
@@ -2852,283 +2645,5 @@ func (fn *formulaFuncs) TRUNC(argsList *list.List) (result string, err error) {
 		return
 	}
 	result = fmt.Sprintf("%g", float64(int(number*adjust))/adjust)
-	return
-}
-
-// Statistical functions
-
-// COUNTA function returns the number of non-blanks within a supplied set of
-// cells or values. The syntax of the function is:
-//
-//   COUNTA(value1,[value2],...)
-//
-func (fn *formulaFuncs) COUNTA(argsList *list.List) (result string, err error) {
-	var count int
-	for token := argsList.Front(); token != nil; token = token.Next() {
-		arg := token.Value.(formulaArg)
-		switch arg.Type {
-		case ArgString:
-			if arg.String != "" {
-				count++
-			}
-		case ArgMatrix:
-			for _, row := range arg.Matrix {
-				for _, value := range row {
-					if value.String != "" {
-						count++
-					}
-				}
-			}
-		}
-	}
-	result = fmt.Sprintf("%d", count)
-	return
-}
-
-// MEDIAN function returns the statistical median (the middle value) of a list
-// of supplied numbers. The syntax of the function is:
-//
-//   MEDIAN(number1,[number2],...)
-//
-func (fn *formulaFuncs) MEDIAN(argsList *list.List) (result string, err error) {
-	if argsList.Len() == 0 {
-		err = errors.New("MEDIAN requires at least 1 argument")
-		return
-	}
-	values := []float64{}
-	var median, digits float64
-	for token := argsList.Front(); token != nil; token = token.Next() {
-		arg := token.Value.(formulaArg)
-		switch arg.Type {
-		case ArgString:
-			if digits, err = strconv.ParseFloat(argsList.Back().Value.(formulaArg).String, 64); err != nil {
-				err = errors.New(formulaErrorVALUE)
-				return
-			}
-			values = append(values, digits)
-		case ArgMatrix:
-			for _, row := range arg.Matrix {
-				for _, value := range row {
-					if value.String == "" {
-						continue
-					}
-					if digits, err = strconv.ParseFloat(value.String, 64); err != nil {
-						err = errors.New(formulaErrorVALUE)
-						return
-					}
-					values = append(values, digits)
-				}
-			}
-		}
-	}
-	sort.Float64s(values)
-	if len(values)%2 == 0 {
-		median = (values[len(values)/2-1] + values[len(values)/2]) / 2
-	} else {
-		median = values[len(values)/2]
-	}
-	result = fmt.Sprintf("%g", median)
-	return
-}
-
-// Information functions
-
-// ISBLANK function tests if a specified cell is blank (empty) and if so,
-// returns TRUE; Otherwise the function returns FALSE. The syntax of the
-// function is:
-//
-//   ISBLANK(value)
-//
-func (fn *formulaFuncs) ISBLANK(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 1 {
-		err = errors.New("ISBLANK requires 1 argument")
-		return
-	}
-	token := argsList.Front().Value.(formulaArg)
-	result = "FALSE"
-	switch token.Type {
-	case ArgUnknown:
-		result = "TRUE"
-	case ArgString:
-		if token.String == "" {
-			result = "TRUE"
-		}
-	}
-	return
-}
-
-// ISERR function tests if an initial supplied expression (or value) returns
-// any Excel Error, except the #N/A error. If so, the function returns the
-// logical value TRUE; If the supplied value is not an error or is the #N/A
-// error, the ISERR function returns FALSE. The syntax of the function is:
-//
-//   ISERR(value)
-//
-func (fn *formulaFuncs) ISERR(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 1 {
-		err = errors.New("ISERR requires 1 argument")
-		return
-	}
-	token := argsList.Front().Value.(formulaArg)
-	result = "FALSE"
-	if token.Type == ArgString {
-		for _, errType := range []string{formulaErrorDIV, formulaErrorNAME, formulaErrorNUM, formulaErrorVALUE, formulaErrorREF, formulaErrorNULL, formulaErrorSPILL, formulaErrorCALC, formulaErrorGETTINGDATA} {
-			if errType == token.String {
-				result = "TRUE"
-			}
-		}
-	}
-	return
-}
-
-// ISERROR function tests if an initial supplied expression (or value) returns
-// an Excel Error, and if so, returns the logical value TRUE; Otherwise the
-// function returns FALSE. The syntax of the function is:
-//
-//   ISERROR(value)
-//
-func (fn *formulaFuncs) ISERROR(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 1 {
-		err = errors.New("ISERROR requires 1 argument")
-		return
-	}
-	token := argsList.Front().Value.(formulaArg)
-	result = "FALSE"
-	if token.Type == ArgString {
-		for _, errType := range []string{formulaErrorDIV, formulaErrorNAME, formulaErrorNA, formulaErrorNUM, formulaErrorVALUE, formulaErrorREF, formulaErrorNULL, formulaErrorSPILL, formulaErrorCALC, formulaErrorGETTINGDATA} {
-			if errType == token.String {
-				result = "TRUE"
-			}
-		}
-	}
-	return
-}
-
-// ISEVEN function tests if a supplied number (or numeric expression)
-// evaluates to an even number, and if so, returns TRUE; Otherwise, the
-// function returns FALSE. The syntax of the function is:
-//
-//   ISEVEN(value)
-//
-func (fn *formulaFuncs) ISEVEN(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 1 {
-		err = errors.New("ISEVEN requires 1 argument")
-		return
-	}
-	token := argsList.Front().Value.(formulaArg)
-	result = "FALSE"
-	var numeric int
-	if token.Type == ArgString {
-		if numeric, err = strconv.Atoi(token.String); err != nil {
-			err = errors.New(formulaErrorVALUE)
-			return
-		}
-		if numeric == numeric/2*2 {
-			result = "TRUE"
-			return
-		}
-	}
-	return
-}
-
-// ISNA function tests if an initial supplied expression (or value) returns
-// the Excel #N/A Error, and if so, returns TRUE; Otherwise the function
-// returns FALSE. The syntax of the function is:
-//
-//   ISNA(value)
-//
-func (fn *formulaFuncs) ISNA(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 1 {
-		err = errors.New("ISNA requires 1 argument")
-		return
-	}
-	token := argsList.Front().Value.(formulaArg)
-	result = "FALSE"
-	if token.Type == ArgString && token.String == formulaErrorNA {
-		result = "TRUE"
-	}
-	return
-}
-
-// ISNONTEXT function function tests if a supplied value is text. If not, the
-// function returns TRUE; If the supplied value is text, the function returns
-// FALSE. The syntax of the function is:
-//
-//   ISNONTEXT(value)
-//
-func (fn *formulaFuncs) ISNONTEXT(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 1 {
-		err = errors.New("ISNONTEXT requires 1 argument")
-		return
-	}
-	token := argsList.Front().Value.(formulaArg)
-	result = "TRUE"
-	if token.Type == ArgString && token.String != "" {
-		result = "FALSE"
-	}
-	return
-}
-
-// ISNUMBER function function tests if a supplied value is a number. If so,
-// the function returns TRUE; Otherwise it returns FALSE. The syntax of the
-// function is:
-//
-//   ISNUMBER(value)
-//
-func (fn *formulaFuncs) ISNUMBER(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 1 {
-		err = errors.New("ISNUMBER requires 1 argument")
-		return
-	}
-	token := argsList.Front().Value.(formulaArg)
-	result = "FALSE"
-	if token.Type == ArgString && token.String != "" {
-		if _, err = strconv.Atoi(token.String); err == nil {
-			result = "TRUE"
-		}
-		err = nil
-	}
-	return
-}
-
-// ISODD function tests if a supplied number (or numeric expression) evaluates
-// to an odd number, and if so, returns TRUE; Otherwise, the function returns
-// FALSE. The syntax of the function is:
-//
-//   ISODD(value)
-//
-func (fn *formulaFuncs) ISODD(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 1 {
-		err = errors.New("ISODD requires 1 argument")
-		return
-	}
-	token := argsList.Front().Value.(formulaArg)
-	result = "FALSE"
-	var numeric int
-	if token.Type == ArgString {
-		if numeric, err = strconv.Atoi(token.String); err != nil {
-			err = errors.New(formulaErrorVALUE)
-			return
-		}
-		if numeric != numeric/2*2 {
-			result = "TRUE"
-			return
-		}
-	}
-	return
-}
-
-// NA function returns the Excel #N/A error. This error message has the
-// meaning 'value not available' and is produced when an Excel Formula is
-// unable to find a value that it needs. The syntax of the function is:
-//
-//   NA()
-//
-func (fn *formulaFuncs) NA(argsList *list.List) (result string, err error) {
-	if argsList.Len() != 0 {
-		err = errors.New("NA accepts no arguments")
-		return
-	}
-	result = formulaErrorNA
 	return
 }
